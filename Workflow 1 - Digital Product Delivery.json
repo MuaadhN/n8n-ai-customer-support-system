@@ -1,0 +1,558 @@
+{
+  "meta": {
+    "instanceId": "portfolio-customer-support-system"
+  },
+  "name": "Workflow 1 — Digital Product Delivery",
+  "nodes": [
+    {
+      "id": "sticky-setup-001",
+      "name": "Setup Instructions",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [240, 60],
+      "parameters": {
+        "color": 3,
+        "width": 700,
+        "height": 290,
+        "content": "# Workflow 1 — Digital Product Delivery\nFires when WooCommerce order is paid → looks up a license key → emails it to the customer.\n\n## Setup Checklist\n1. **WooCommerce** → Settings → Advanced → Webhooks → Add:\n   - Topic: `Order updated`\n   - Delivery URL: `https://YOUR-N8N-DOMAIN/webhook/woocommerce-order`\n2. **Google Sheets**: Replace every `REPLACE_WITH_YOUR_SPREADSHEET_ID` placeholder\n3. **SMTP credential**: Create in n8n → Credentials → SMTP → name it `Titan Mail SMTP`\n   - Host: `smtp.titan.email` | Port: `587` | Security: `STARTTLS`\n4. **From / Admin email**: Update both `emailSend` nodes with your real addresses\n\n## Google Sheets Structure\n**Tab 1 — `License Keys`** (gid=0)\n`product_id | product_name | license_key | status | assigned_to | assigned_date`\n\n**Tab 2 — `Order Log`** (gid=1)\n`order_id | customer_email | product_name | license_key | delivery_sent | sent_at`"
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "webhook-wc-001",
+      "name": "WooCommerce Order Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [240, 440],
+      "parameters": {
+        "path": "woocommerce-order",
+        "options": {},
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "responseData": "firstEntryJson"
+      },
+      "webhookId": "wc-order-trigger-001",
+      "typeVersion": 1.1
+    },
+    {
+      "id": "if-order-paid-001",
+      "name": "IF - Order Paid?",
+      "type": "n8n-nodes-base.if",
+      "position": [480, 440],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "leftValue": "",
+            "caseSensitive": false,
+            "typeValidation": "loose"
+          },
+          "combinator": "or",
+          "conditions": [
+            {
+              "id": "cond-completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "completed"
+            },
+            {
+              "id": "cond-processing",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "processing"
+            }
+          ]
+        }
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "set-ignore-001",
+      "name": "Ignore — Not Paid",
+      "type": "n8n-nodes-base.set",
+      "position": [480, 680],
+      "parameters": {
+        "options": {},
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ignore-field-001",
+              "name": "reason",
+              "type": "string",
+              "value": "Order status is not completed or processing — webhook ignored."
+            }
+          ]
+        }
+      },
+      "typeVersion": 3.3
+    },
+    {
+      "id": "code-parse-001",
+      "name": "Code - Parse Order Data",
+      "type": "n8n-nodes-base.code",
+      "position": [720, 440],
+      "parameters": {
+        "jsCode": "// WooCommerce sends the full order object as the webhook body.\n// n8n makes the parsed JSON directly available as $input.first().json\nconst order = $input.first().json;\nconst lineItem = order.line_items && order.line_items[0];\n\nif (!lineItem) {\n  throw new Error('No line items found in order #' + order.id);\n}\n\nreturn [{\n  json: {\n    order_id:            order.id,\n    order_status:        order.status,\n    order_date:          order.date_created,\n    customer_email:      order.billing.email,\n    customer_name:       order.billing.first_name + ' ' + order.billing.last_name,\n    customer_first_name: order.billing.first_name,\n    product_id:          String(lineItem.product_id),\n    product_name:        lineItem.name,\n    quantity:            lineItem.quantity,\n    total:               order.total,\n    currency:            order.currency || 'USD'\n  }\n}];"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "sheets-read-001",
+      "name": "Sheets - Read License Keys",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [960, 440],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "License Keys"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets OAuth2"
+        }
+      },
+      "typeVersion": 4.5
+    },
+    {
+      "id": "aggregate-keys-001",
+      "name": "Aggregate - Collect All Keys",
+      "type": "n8n-nodes-base.aggregate",
+      "position": [1200, 440],
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "all_keys",
+        "options": {}
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "code-filter-001",
+      "name": "Code - Find Available Key",
+      "type": "n8n-nodes-base.code",
+      "position": [1440, 440],
+      "parameters": {
+        "jsCode": "// Pull order context from earlier node\nconst orderData = $('Code - Parse Order Data').first().json;\nconst productId  = String(orderData.product_id);\n\n// All key rows were aggregated into a single item\nconst allKeys = $input.first().json.all_keys || [];\n\n// Find the first key that matches product + status = available\nconst match = allKeys.find(row =>\n  String(row.product_id) === productId &&\n  String(row.status).toLowerCase() === 'available'\n);\n\nif (!match) {\n  return [{\n    json: {\n      ...orderData,\n      key_found:   false,\n      license_key: null,\n      sheet_row:   null\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...orderData,\n    key_found:   true,\n    license_key: match.license_key,\n    sheet_row:   match.row_number\n  }\n}];"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "if-key-avail-001",
+      "name": "IF - Key Available?",
+      "type": "n8n-nodes-base.if",
+      "position": [1680, 440],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-key-found",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.key_found }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "sheets-update-001",
+      "name": "Sheets - Mark Key as Used",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [1960, 240],
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "License Keys"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_number":    "={{ $json.sheet_row }}",
+            "status":        "used",
+            "assigned_to":   "={{ $json.customer_email }}",
+            "assigned_date": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": ["row_number"],
+          "schema": [
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": true,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "assigned_to",
+              "displayName": "assigned_to",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "assigned_date",
+              "displayName": "assigned_date",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets OAuth2"
+        }
+      },
+      "typeVersion": 4.5
+    },
+    {
+      "id": "code-email-001",
+      "name": "Code - Build Delivery Email",
+      "type": "n8n-nodes-base.code",
+      "position": [2220, 240],
+      "parameters": {
+        "jsCode": "const d   = $input.first().json;\nconst now = new Date().toLocaleDateString('en-US', {\n  year: 'numeric', month: 'long', day: 'numeric'\n});\n\nconst html = `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"utf-8\">\n  <style>\n    body{font-family:Arial,sans-serif;margin:0;padding:0;background:#f1f5f9}\n    .wrap{max-width:600px;margin:30px auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.08)}\n    .hdr{background:linear-gradient(135deg,#1e40af,#2563eb);padding:32px 40px;text-align:center;color:#fff}\n    .hdr h1{margin:0;font-size:24px;font-weight:700;letter-spacing:-.3px}\n    .hdr p{margin:8px 0 0;opacity:.85;font-size:14px}\n    .body{padding:36px 40px}\n    .badge{background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;padding:10px 18px;display:inline-block;margin-bottom:22px;color:#0369a1;font-weight:600;font-size:13px}\n    .prod{font-size:20px;font-weight:700;color:#1e293b;margin:0 0 18px}\n    .key-lbl{font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px}\n    .key-box{background:#0f172a;color:#4ade80;font-family:'Courier New',monospace;font-size:22px;font-weight:700;padding:24px;text-align:center;border-radius:8px;letter-spacing:4px;margin-bottom:28px;word-break:break-all}\n    .steps{background:#f8fafc;border-radius:8px;padding:22px 24px;margin-bottom:28px}\n    .steps h3{margin:0 0 12px;font-size:15px;color:#1e293b}\n    .steps ol{margin:0;padding-left:20px;color:#475569;font-size:14px;line-height:1.9}\n    .note{border-left:3px solid #2563eb;padding:12px 16px;background:#f0f9ff;border-radius:0 6px 6px 0;font-size:14px;color:#1e40af;margin-bottom:24px}\n    .ftr{background:#f8fafc;padding:18px 40px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0}\n  </style>\n</head>\n<body>\n  <div class=\"wrap\">\n    <div class=\"hdr\">\n      <h1>Your Product is Ready!</h1>\n      <p>Thank you for your purchase — your license key is below</p>\n    </div>\n    <div class=\"body\">\n      <p style=\"font-size:16px;color:#1e293b;margin-bottom:20px\">Hi <strong>${d.customer_first_name}</strong>,</p>\n      <p style=\"color:#475569;font-size:15px;margin-bottom:22px\">Your payment was confirmed and your order has been processed. Here is everything you need to get started right away.</p>\n      <div class=\"badge\">Order #${d.order_id}&nbsp;&nbsp;|&nbsp;&nbsp;${now}</div>\n      <p class=\"prod\">${d.product_name}</p>\n      <div class=\"key-lbl\">Your License Key</div>\n      <div class=\"key-box\">${d.license_key}</div>\n      <div class=\"steps\">\n        <h3>How to Activate</h3>\n        <ol>\n          <li>Download the installer from your account dashboard</li>\n          <li>Install the software on your device</li>\n          <li>Open the app and navigate to <strong>Help &rarr; Activate License</strong></li>\n          <li>Paste your license key and click <strong>Activate</strong></li>\n        </ol>\n      </div>\n      <div class=\"note\">Need help? Simply reply to this email and our support team will respond within 24 hours.</div>\n      <p style=\"color:#475569;font-size:14px\">Best regards,<br><strong>Support Team</strong></p>\n    </div>\n    <div class=\"ftr\">\n      <p>Order #${d.order_id} &bull; Sent to ${d.customer_email}</p>\n      <p>Please keep your license key in a safe place.</p>\n    </div>\n  </div>\n</body>\n</html>`;\n\nreturn [{\n  json: {\n    ...d,\n    email_html:    html,\n    email_subject: 'Your License Key — Order #' + d.order_id + ' (' + d.product_name + ')'\n  }\n}];"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "email-deliver-001",
+      "name": "Send Email - Deliver Product",
+      "type": "n8n-nodes-base.emailSend",
+      "position": [2480, 240],
+      "parameters": {
+        "fromEmail": "support@yourdomain.com",
+        "toEmail": "={{ $json.customer_email }}",
+        "subject": "={{ $json.email_subject }}",
+        "html": "={{ $json.email_html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_SMTP_CREDENTIAL_ID",
+          "name": "Titan Mail SMTP"
+        }
+      },
+      "typeVersion": 2.1
+    },
+    {
+      "id": "sheets-log-001",
+      "name": "Sheets - Log Order Delivery",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [2740, 240],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=1",
+          "mode": "list",
+          "cachedResultName": "Order Log"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "order_id":       "={{ $json.order_id }}",
+            "customer_email": "={{ $json.customer_email }}",
+            "product_name":   "={{ $json.product_name }}",
+            "license_key":    "={{ $json.license_key }}",
+            "delivery_sent":  "YES",
+            "sent_at":        "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "order_id",
+              "displayName": "order_id",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "customer_email",
+              "displayName": "customer_email",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "product_name",
+              "displayName": "product_name",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "license_key",
+              "displayName": "license_key",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "delivery_sent",
+              "displayName": "delivery_sent",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "sent_at",
+              "displayName": "sent_at",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets OAuth2"
+        }
+      },
+      "typeVersion": 4.5
+    },
+    {
+      "id": "email-admin-alert-001",
+      "name": "Send Email - Admin Stock Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "position": [1960, 660],
+      "parameters": {
+        "fromEmail": "support@yourdomain.com",
+        "toEmail": "admin@yourdomain.com",
+        "subject": "={{ '⚠️ OUT OF STOCK: ' + $json.product_name + ' — Order #' + $json.order_id }}",
+        "text": "={{ 'URGENT — NO LICENSE KEY AVAILABLE\\n\\nA customer just purchased ' + $json.product_name + ' but there are NO available keys in the Google Sheet.\\n\\nOrder Details:\\n  Order ID : ' + $json.order_id + '\\n  Customer : ' + $json.customer_name + '\\n  Email    : ' + $json.customer_email + '\\n  Product  : ' + $json.product_name + '\\n  Total    : ' + $json.currency + ' ' + $json.total + '\\n\\nACTION REQUIRED:\\n  1. Add a new license key to the Google Sheet (License Keys tab, status = available)\\n  2. Manually email the key to: ' + $json.customer_email + '\\n\\nPlease resolve this ASAP to avoid a poor customer experience.' }}",
+        "options": {}
+      },
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_SMTP_CREDENTIAL_ID",
+          "name": "Titan Mail SMTP"
+        }
+      },
+      "typeVersion": 2.1
+    }
+  ],
+  "connections": {
+    "WooCommerce Order Webhook": {
+      "main": [
+        [
+          {
+            "node": "IF - Order Paid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Order Paid?": {
+      "main": [
+        [
+          {
+            "node": "Code - Parse Order Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ignore — Not Paid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Parse Order Data": {
+      "main": [
+        [
+          {
+            "node": "Sheets - Read License Keys",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheets - Read License Keys": {
+      "main": [
+        [
+          {
+            "node": "Aggregate - Collect All Keys",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate - Collect All Keys": {
+      "main": [
+        [
+          {
+            "node": "Code - Find Available Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Find Available Key": {
+      "main": [
+        [
+          {
+            "node": "IF - Key Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Key Available?": {
+      "main": [
+        [
+          {
+            "node": "Sheets - Mark Key as Used",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Email - Admin Stock Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheets - Mark Key as Used": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Delivery Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Delivery Email": {
+      "main": [
+        [
+          {
+            "node": "Send Email - Deliver Product",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email - Deliver Product": {
+      "main": [
+        [
+          {
+            "node": "Sheets - Log Order Delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
