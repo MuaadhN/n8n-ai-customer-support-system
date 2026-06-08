@@ -1,0 +1,167 @@
+{
+  "meta": { "instanceId": "portfolio-customer-support-system" },
+  "name": "Workflow 4 — Human Approval Gate",
+  "nodes": [
+    {
+      "id": "sticky-w4-001",
+      "name": "Setup Instructions",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [240, 60],
+      "parameters": {
+        "color": 4,
+        "width": 700,
+        "height": 220,
+        "content": "# Workflow 4 — Human Approval Gate\nReceives the ticket + AI draft from Workflow 3 → emails the admin with the original message and draft reply → waits up to 24h for approval → routes to either Workflow 5 (send reply) or marks as rejected.\n\n## How the approval links work\nn8n's **Wait node** pauses the execution and generates a unique resume URL (`$execution.resumeUrl`). The approval email contains:\n- **Approve link**: `resumeUrl?outcome=approved`\n- **Reject link**: `resumeUrl?outcome=rejected`\n\nWhen the admin clicks either link in their email, the workflow resumes automatically from the Wait node.\n\n## Setup\n1. **SMTP credential**: same one from Workflow 1\n2. **Admin email**: update `admin@yourdomain.com` in the Send Email node\n3. **Workflow 5 ID**: update after importing Workflow 5"
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "exec-trigger-w4",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [240, 400],
+      "parameters": {},
+      "typeVersion": 1
+    },
+    {
+      "id": "code-approval-email-001",
+      "name": "Code - Build Approval Email",
+      "type": "n8n-nodes-base.code",
+      "position": [480, 400],
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst approveUrl = $execution.resumeUrl + '?outcome=approved';\nconst rejectUrl  = $execution.resumeUrl + '?outcome=rejected';\n\nconst html = `<!DOCTYPE html>\n<html>\n<head><meta charset=\"utf-8\"><style>\n  body{font-family:Arial,sans-serif;margin:0;padding:0;background:#f1f5f9}\n  .wrap{max-width:660px;margin:30px auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 4px 16px rgba(0,0,0,.08)}\n  .hdr{background:#1e293b;padding:24px 32px;color:#fff}\n  .hdr h1{margin:0;font-size:20px}\n  .hdr p{margin:6px 0 0;color:#94a3b8;font-size:13px}\n  .body{padding:32px}\n  .badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:16px}\n  .badge.order_issue{background:#fef9c3;color:#854d0e}\n  .badge.refund_request{background:#fee2e2;color:#991b1b}\n  .badge.product_help{background:#dbeafe;color:#1e40af}\n  .badge.delivery{background:#dcfce7;color:#166534}\n  .badge.general{background:#f3f4f6;color:#374151}\n  .section{background:#f8fafc;border-radius:8px;padding:20px;margin-bottom:20px}\n  .section h3{margin:0 0 10px;font-size:14px;color:#64748b;text-transform:uppercase;letter-spacing:.5px}\n  .section p{margin:0;color:#1e293b;font-size:15px;white-space:pre-wrap;line-height:1.6}\n  .actions{display:flex;gap:12px;margin-top:24px}\n  .btn{display:inline-block;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;text-align:center}\n  .approve{background:#16a34a;color:#fff}\n  .reject{background:#dc2626;color:#fff}\n  .meta{font-size:12px;color:#94a3b8;margin-top:20px}\n</style></head>\n<body>\n  <div class=\"wrap\">\n    <div class=\"hdr\">\n      <h1>Support Reply — Awaiting Approval</h1>\n      <p>Ticket ${d.ticket_id} &bull; ${d.from_email}</p>\n    </div>\n    <div class=\"body\">\n      <span class=\"badge ${d.intent || 'general'}\">${(d.intent||'general').replace('_',' ')}</span>\n      <div class=\"section\">\n        <h3>Customer Email</h3>\n        <p><strong>From:</strong> ${d.from_name} &lt;${d.from_email}&gt;<br><strong>Subject:</strong> ${d.subject}</p>\n        <br>\n        <p>${d.body_text}</p>\n      </div>\n      <div class=\"section\">\n        <h3>AI Draft Reply</h3>\n        <p>${d.ai_draft}</p>\n      </div>\n      <div class=\"actions\">\n        <a href=\"${approveUrl}\" class=\"btn approve\">Approve &amp; Send</a>\n        <a href=\"${rejectUrl}\" class=\"btn reject\">Reject</a>\n      </div>\n      <p class=\"meta\">This approval link expires in 24 hours. Ticket: ${d.ticket_id}</p>\n    </div>\n  </div>\n</body>\n</html>`;\n\nreturn [{\n  json: {\n    ...d,\n    approval_email_html: html,\n    approve_url: approveUrl,\n    reject_url:  rejectUrl\n  }\n}];"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "email-admin-approval-001",
+      "name": "Send Email - Admin Approval Request",
+      "type": "n8n-nodes-base.emailSend",
+      "position": [720, 400],
+      "parameters": {
+        "fromEmail": "support@yourdomain.com",
+        "toEmail": "admin@yourdomain.com",
+        "subject": "={{ '[APPROVAL] ' + $json.intent.replace('_',' ').toUpperCase() + ' — ' + $json.subject + ' (Ticket ' + $json.ticket_id + ')' }}",
+        "html": "={{ $json.approval_email_html }}",
+        "options": { "appendAttribution": false }
+      },
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_SMTP_CREDENTIAL_ID",
+          "name": "Titan Mail SMTP"
+        }
+      },
+      "typeVersion": 2.1
+    },
+    {
+      "id": "wait-approval-001",
+      "name": "Wait - Admin Approval",
+      "type": "n8n-nodes-base.wait",
+      "position": [960, 400],
+      "parameters": {
+        "resume": "webhook",
+        "unit": "hours",
+        "amount": 24,
+        "options": {}
+      },
+      "webhookId": "wait-approval-webhook-001",
+      "typeVersion": 1.1
+    },
+    {
+      "id": "if-approved-001",
+      "name": "IF - Approved?",
+      "type": "n8n-nodes-base.if",
+      "position": [1200, 400],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "leftValue": "",
+            "caseSensitive": false,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-approved",
+              "operator": { "type": "string", "operation": "equals" },
+              "leftValue": "={{ $json.query?.outcome || $json.outcome || '' }}",
+              "rightValue": "approved"
+            }
+          ]
+        }
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "execute-wf5-001",
+      "name": "Execute Workflow 5 - Send Reply",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "position": [1440, 260],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_WORKFLOW_5_ID",
+          "mode": "id"
+        },
+        "options": { "waitForSubWorkflow": false }
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "sheets-rejected-001",
+      "name": "Sheets - Mark as Rejected",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [1440, 560],
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=2",
+          "mode": "list",
+          "cachedResultName": "Support Tickets"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ticket_id": "={{ $json.query?.ticket || $json.ticket_id }}",
+            "status":    "rejected"
+          },
+          "matchingColumns": ["ticket_id"],
+          "schema": [
+            { "id": "ticket_id", "displayName": "ticket_id", "required": false, "defaultMatch": true,  "canBeUsedToMatch": true, "display": true, "type": "string", "readOnly": false, "removed": false },
+            { "id": "status",    "displayName": "status",    "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "display": true, "type": "string", "readOnly": false, "removed": false }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets OAuth2"
+        }
+      },
+      "typeVersion": 4.5
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger":         { "main": [[{ "node": "Code - Build Approval Email",          "type": "main", "index": 0 }]] },
+    "Code - Build Approval Email":      { "main": [[{ "node": "Send Email - Admin Approval Request",  "type": "main", "index": 0 }]] },
+    "Send Email - Admin Approval Request": { "main": [[{ "node": "Wait - Admin Approval",             "type": "main", "index": 0 }]] },
+    "Wait - Admin Approval":            { "main": [[{ "node": "IF - Approved?",                        "type": "main", "index": 0 }]] },
+    "IF - Approved?": {
+      "main": [
+        [{ "node": "Execute Workflow 5 - Send Reply", "type": "main", "index": 0 }],
+        [{ "node": "Sheets - Mark as Rejected",       "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

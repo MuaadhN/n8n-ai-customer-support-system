@@ -65,17 +65,17 @@ WooCommerce Store
 [Sheets - Log Order Delivery]
 ```
 
-### Workflow 2 — Support Email Intake *(coming soon)*
-Watches the support inbox via IMAP, classifies incoming emails by intent, and triggers the AI agent.
+### Workflow 2 — Support Email Intake
+Polls the support inbox every minute via IMAP → converts HTML to plain text → classifies the email intent with GPT-4o-mini into one of five categories (`order_issue`, `refund_request`, `product_help`, `delivery`, `general`) → logs the ticket to Google Sheets → triggers the AI Support Agent.
 
-### Workflow 3 — AI Support Agent *(coming soon)*
-Uses WooCommerce API to look up the customer's order, then passes all context to an OpenAI GPT-4o agent to draft a personalized reply.
+### Workflow 3 — AI Support Agent
+Looks up the customer in WooCommerce by email → fetches their recent orders → passes the full context (ticket, order history, intent) to GPT-4o to draft a personalized reply → saves the draft to the ticket → triggers the Human Approval Gate.
 
-### Workflow 4 — Human Approval Gate *(coming soon)*
-Sends the AI draft to the admin with Approve / Reject links. Waits for approval before proceeding.
+### Workflow 4 — Human Approval Gate
+Builds a branded approval email showing the original customer message and the AI draft → sends it to the admin → pauses execution using n8n's **Wait node** → resumes when the admin clicks **Approve** or **Reject** → routes to Workflow 5 or marks the ticket as rejected.
 
-### Workflow 5 — Send Final Reply *(coming soon)*
-Sends the approved email to the customer via SMTP and logs the interaction.
+### Workflow 5 — Send Final Reply
+Wraps the approved AI draft in a branded HTML email → sends it to the customer via SMTP → updates the ticket status to `replied` in Google Sheets with a timestamp.
 
 ---
 
@@ -138,10 +138,10 @@ Sends the approved email to the customer via SMTP and logs the interaction.
 ```
 /
 ├── Workflow 1 - Digital Product Delivery.json
-├── Workflow 2 - Support Email Intake.json          (coming soon)
-├── Workflow 3 - AI Support Agent.json              (coming soon)
-├── Workflow 4 - Human Approval Gate.json           (coming soon)
-├── Workflow 5 - Send Final Reply.json              (coming soon)
+├── Workflow 2 - Support Email Intake.json
+├── Workflow 3 - AI Support Agent.json
+├── Workflow 4 - Human Approval Gate.json
+├── Workflow 5 - Send Final Reply.json
 └── README.md
 ```
 

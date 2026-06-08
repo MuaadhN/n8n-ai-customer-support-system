@@ -1,0 +1,197 @@
+{
+  "meta": { "instanceId": "portfolio-customer-support-system" },
+  "name": "Workflow 3 — AI Support Agent",
+  "nodes": [
+    {
+      "id": "sticky-w3-001",
+      "name": "Setup Instructions",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [240, 60],
+      "parameters": {
+        "color": 3,
+        "width": 720,
+        "height": 240,
+        "content": "# Workflow 3 — AI Support Agent\nReceives a support ticket from Workflow 2 → looks up the customer in WooCommerce → fetches their orders → passes all context to GPT-4o to draft a reply → saves the draft → triggers the Human Approval Gate (Workflow 4).\n\n## Setup Checklist\n1. **WooCommerce credential**: Create → Credentials → WooCommerce API\n   - Store URL: `https://yourstore.com`\n   - Consumer Key + Consumer Secret (from WooCommerce → Settings → Advanced → REST API)\n2. **OpenAI credential**: same one used in Workflow 2\n3. **Google Sheets credential**: same one used in Workflow 1\n   - Replace `REPLACE_WITH_YOUR_SPREADSHEET_ID`\n4. **Workflow 4 ID**: After importing Workflow 4, update the Execute Workflow node at the end"
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "exec-trigger-w3",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [240, 400],
+      "parameters": {},
+      "typeVersion": 1
+    },
+    {
+      "id": "http-wc-customer-001",
+      "name": "WooCommerce - Get Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [480, 400],
+      "parameters": {
+        "url": "=https://REPLACE_STORE_URL/wp-json/wc/v3/customers",
+        "method": "GET",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "wooCommerceApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "email",    "value": "={{ $json.from_email }}" },
+            { "name": "per_page", "value": "1" }
+          ]
+        },
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "credentials": {
+        "wooCommerceApi": {
+          "id": "REPLACE_WC_CREDENTIAL_ID",
+          "name": "WooCommerce account"
+        }
+      },
+      "typeVersion": 4.1
+    },
+    {
+      "id": "http-wc-orders-001",
+      "name": "WooCommerce - Get Orders",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [720, 400],
+      "parameters": {
+        "url": "=https://REPLACE_STORE_URL/wp-json/wc/v3/orders",
+        "method": "GET",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "wooCommerceApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "customer",  "value": "={{ Array.isArray($json) && $json[0] ? $json[0].id : 0 }}" },
+            { "name": "per_page",  "value": "3" },
+            { "name": "orderby",   "value": "date" },
+            { "name": "order",     "value": "desc" }
+          ]
+        },
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "credentials": {
+        "wooCommerceApi": {
+          "id": "REPLACE_WC_CREDENTIAL_ID",
+          "name": "WooCommerce account"
+        }
+      },
+      "typeVersion": 4.1
+    },
+    {
+      "id": "code-build-context-001",
+      "name": "Code - Build AI Context",
+      "type": "n8n-nodes-base.code",
+      "position": [960, 400],
+      "parameters": {
+        "jsCode": "// Original ticket from Workflow 2\nconst ticket = $('Execute Workflow Trigger').first().json;\n\n// Customer lookup result (array of customers)\nconst customers = $('WooCommerce - Get Customer').first().json;\nconst customer  = Array.isArray(customers) && customers.length > 0 ? customers[0] : null;\n\n// Orders lookup result (array of orders)\nconst ordersRaw = $input.first().json;\nconst orders    = Array.isArray(ordersRaw) ? ordersRaw : [];\n\n// Build a readable order context string for the AI\nlet orderContext = 'No orders found for this customer.';\nif (customer && orders.length > 0) {\n  orderContext = orders.map(o => {\n    const products = (o.line_items || []).map(i => i.name).join(', ');\n    return `Order #${o.id} | Status: ${o.status} | Date: ${(o.date_created||'').substring(0,10)} | Total: ${o.currency} ${o.total} | Products: ${products}`;\n  }).join('\\n');\n}\n\nconst customerName = ticket.from_name ||\n  (customer ? (customer.first_name + ' ' + customer.last_name).trim() : 'Customer');\n\nreturn [{\n  json: {\n    ...ticket,\n    customer_found: !!customer,\n    customer_id:    customer ? customer.id   : null,\n    customer_name:  customerName,\n    order_context:  orderContext\n  }\n}];"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "http-openai-draft-001",
+      "name": "OpenAI - Draft Support Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1200, 400],
+      "parameters": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "method": "POST",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'gpt-4o-mini',\n  temperature: 0.4,\n  max_tokens: 300,\n  messages: [\n    {\n      role: 'system',\n      content: 'You are a professional customer support agent for a digital software store. Write a helpful, friendly, and concise reply to the customer email below. Use the order information provided if relevant. Keep the reply under 150 words. Start with \"Hi ' + $json.customer_name + ',\". Do not include a subject line. End with \"Best regards,\\\\nSupport Team\".'\n    },\n    {\n      role: 'user',\n      content: '=== CUSTOMER EMAIL ===\\nFrom: ' + $json.from_email + '\\nSubject: ' + $json.subject + '\\nIntent: ' + $json.intent + '\\nMessage:\\n' + $json.body_text + '\\n\\n=== ORDER HISTORY ===\\n' + $json.order_context + '\\n\\nWrite a support reply:'\n    }\n  ]\n}) }}",
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI API"
+        }
+      },
+      "typeVersion": 4.1
+    },
+    {
+      "id": "code-extract-draft-001",
+      "name": "Code - Extract Draft",
+      "type": "n8n-nodes-base.code",
+      "position": [1440, 400],
+      "parameters": {
+        "jsCode": "const context    = $('Code - Build AI Context').first().json;\nconst openaiResp = $input.first().json;\n\n// Extract the AI-generated reply text\nconst aiDraft = openaiResp.choices?.[0]?.message?.content?.trim() || 'Unable to generate reply.';\n\nreturn [{\n  json: {\n    ...context,\n    ai_draft: aiDraft\n  }\n}];"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "sheets-save-draft-001",
+      "name": "Sheets - Save Draft to Ticket",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [1680, 400],
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=2",
+          "mode": "list",
+          "cachedResultName": "Support Tickets"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ticket_id": "={{ $json.ticket_id }}",
+            "ai_draft":  "={{ $json.ai_draft }}",
+            "status":    "pending_approval"
+          },
+          "matchingColumns": ["ticket_id"],
+          "schema": [
+            { "id": "ticket_id", "displayName": "ticket_id", "required": false, "defaultMatch": true,  "canBeUsedToMatch": true, "display": true, "type": "string", "readOnly": false, "removed": false },
+            { "id": "ai_draft",  "displayName": "ai_draft",  "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "display": true, "type": "string", "readOnly": false, "removed": false },
+            { "id": "status",    "displayName": "status",    "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "display": true, "type": "string", "readOnly": false, "removed": false }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets OAuth2"
+        }
+      },
+      "typeVersion": 4.5
+    },
+    {
+      "id": "execute-wf4-001",
+      "name": "Execute Workflow 4 - Approval Gate",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "position": [1920, 400],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_WORKFLOW_4_ID",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "typeVersion": 2
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger":          { "main": [[{ "node": "WooCommerce - Get Customer",       "type": "main", "index": 0 }]] },
+    "WooCommerce - Get Customer":        { "main": [[{ "node": "WooCommerce - Get Orders",          "type": "main", "index": 0 }]] },
+    "WooCommerce - Get Orders":          { "main": [[{ "node": "Code - Build AI Context",           "type": "main", "index": 0 }]] },
+    "Code - Build AI Context":           { "main": [[{ "node": "OpenAI - Draft Support Reply",      "type": "main", "index": 0 }]] },
+    "OpenAI - Draft Support Reply":      { "main": [[{ "node": "Code - Extract Draft",              "type": "main", "index": 0 }]] },
+    "Code - Extract Draft":              { "main": [[{ "node": "Sheets - Save Draft to Ticket",     "type": "main", "index": 0 }]] },
+    "Sheets - Save Draft to Ticket":     { "main": [[{ "node": "Execute Workflow 4 - Approval Gate","type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

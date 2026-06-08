@@ -1,0 +1,125 @@
+{
+  "meta": { "instanceId": "portfolio-customer-support-system" },
+  "name": "Workflow 5 — Send Final Reply",
+  "nodes": [
+    {
+      "id": "sticky-w5-001",
+      "name": "Setup Instructions",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [240, 60],
+      "parameters": {
+        "color": 5,
+        "width": 600,
+        "height": 180,
+        "content": "# Workflow 5 — Send Final Reply\nTriggered by Workflow 4 after admin approval → wraps the AI draft in a branded HTML email → sends to the customer via SMTP → updates the ticket status to `replied` in Google Sheets.\n\n## Setup\n1. **SMTP credential**: same one from Workflow 1\n2. **Google Sheets credential**: same one from Workflow 1\n   - Replace `REPLACE_WITH_YOUR_SPREADSHEET_ID`\n3. **From email**: update `support@yourdomain.com` in the Send Email node"
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "exec-trigger-w5",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [240, 380],
+      "parameters": {},
+      "typeVersion": 1
+    },
+    {
+      "id": "code-build-reply-001",
+      "name": "Code - Build Customer Reply Email",
+      "type": "n8n-nodes-base.code",
+      "position": [480, 380],
+      "parameters": {
+        "jsCode": "const d   = $input.first().json;\nconst now = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });\n\nconst html = `<!DOCTYPE html>\n<html>\n<head><meta charset=\"utf-8\"><style>\n  body{font-family:Arial,sans-serif;margin:0;padding:0;background:#f1f5f9}\n  .wrap{max-width:600px;margin:30px auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 4px 16px rgba(0,0,0,.08)}\n  .hdr{background:linear-gradient(135deg,#1e40af,#2563eb);padding:28px 36px;color:#fff}\n  .hdr h1{margin:0;font-size:20px;font-weight:700}\n  .hdr p{margin:6px 0 0;opacity:.8;font-size:13px}\n  .body{padding:36px}\n  .reply{font-size:15px;color:#1e293b;line-height:1.75;white-space:pre-wrap;margin-bottom:28px}\n  .divider{border:none;border-top:1px solid #e2e8f0;margin:24px 0}\n  .original{background:#f8fafc;border-radius:8px;padding:18px 20px}\n  .original h4{margin:0 0 10px;font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px}\n  .original p{margin:0;font-size:13px;color:#64748b;line-height:1.6;white-space:pre-wrap}\n  .footer{background:#f8fafc;padding:16px 36px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0}\n</style></head>\n<body>\n  <div class=\"wrap\">\n    <div class=\"hdr\">\n      <h1>Re: ${d.subject}</h1>\n      <p>Support reply &bull; ${now}</p>\n    </div>\n    <div class=\"body\">\n      <div class=\"reply\">${d.ai_draft}</div>\n      <hr class=\"divider\">\n      <div class=\"original\">\n        <h4>Your original message</h4>\n        <p>${d.body_text.substring(0, 500)}${d.body_text.length > 500 ? '...' : ''}</p>\n      </div>\n    </div>\n    <div class=\"footer\">\n      <p>Ticket #${d.ticket_id} &bull; Replied ${now}</p>\n    </div>\n  </div>\n</body>\n</html>`;\n\nreturn [{\n  json: {\n    ...d,\n    reply_html:    html,\n    reply_subject: 'Re: ' + d.subject,\n    replied_at:    new Date().toISOString()\n  }\n}];"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "email-send-reply-001",
+      "name": "Send Email - Customer Reply",
+      "type": "n8n-nodes-base.emailSend",
+      "position": [720, 380],
+      "parameters": {
+        "fromEmail": "support@yourdomain.com",
+        "toEmail": "={{ $json.from_email }}",
+        "subject": "={{ $json.reply_subject }}",
+        "html": "={{ $json.reply_html }}",
+        "options": { "appendAttribution": false }
+      },
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_SMTP_CREDENTIAL_ID",
+          "name": "Titan Mail SMTP"
+        }
+      },
+      "typeVersion": 2.1
+    },
+    {
+      "id": "sheets-mark-replied-001",
+      "name": "Sheets - Mark Ticket as Replied",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [960, 380],
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=2",
+          "mode": "list",
+          "cachedResultName": "Support Tickets"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ticket_id":  "={{ $json.ticket_id }}",
+            "status":     "replied",
+            "replied_at": "={{ $json.replied_at }}"
+          },
+          "matchingColumns": ["ticket_id"],
+          "schema": [
+            { "id": "ticket_id",  "displayName": "ticket_id",  "required": false, "defaultMatch": true,  "canBeUsedToMatch": true, "display": true, "type": "string", "readOnly": false, "removed": false },
+            { "id": "status",     "displayName": "status",     "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "display": true, "type": "string", "readOnly": false, "removed": false },
+            { "id": "replied_at", "displayName": "replied_at", "required": false, "defaultMatch": false, "canBeUsedToMatch": true, "display": true, "type": "string", "readOnly": false, "removed": false }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets OAuth2"
+        }
+      },
+      "typeVersion": 4.5
+    },
+    {
+      "id": "set-done-001",
+      "name": "Done",
+      "type": "n8n-nodes-base.set",
+      "position": [1200, 380],
+      "parameters": {
+        "options": {},
+        "assignments": {
+          "assignments": [
+            { "id": "done-field", "name": "result",    "type": "string", "value": "success" },
+            { "id": "done-ticket","name": "ticket_id", "type": "string", "value": "={{ $json.ticket_id }}" },
+            { "id": "done-email", "name": "sent_to",   "type": "string", "value": "={{ $json.from_email }}" },
+            { "id": "done-time",  "name": "replied_at","type": "string", "value": "={{ $json.replied_at }}" }
+          ]
+        }
+      },
+      "typeVersion": 3.3
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger":      { "main": [[{ "node": "Code - Build Customer Reply Email", "type": "main", "index": 0 }]] },
+    "Code - Build Customer Reply Email": { "main": [[{ "node": "Send Email - Customer Reply",  "type": "main", "index": 0 }]] },
+    "Send Email - Customer Reply":   { "main": [[{ "node": "Sheets - Mark Ticket as Replied",  "type": "main", "index": 0 }]] },
+    "Sheets - Mark Ticket as Replied": { "main": [[{ "node": "Done",                           "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}
