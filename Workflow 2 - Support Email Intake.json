@@ -1,0 +1,333 @@
+{
+  "meta": {
+    "instanceId": "portfolio-customer-support-system"
+  },
+  "name": "Workflow 2 — Support Email Intake",
+  "nodes": [
+    {
+      "id": "sticky-w2-001",
+      "name": "Setup Instructions",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [240, 60],
+      "parameters": {
+        "color": 3,
+        "width": 720,
+        "height": 280,
+        "content": "# Workflow 2 — Support Email Intake\nPolls the support inbox every minute → converts HTML to text → classifies intent with OpenAI → logs ticket → triggers the AI Support Agent (Workflow 3).\n\n## Setup Checklist\n1. **IMAP credential**: Create in n8n → Credentials → IMAP\n   - Host: `imap.titan.email` (or `imap.gmail.com` for Gmail)\n   - Port: `993` | SSL: ON | User + Password: your support email\n2. **OpenAI credential**: Create → Credentials → OpenAI API → paste your API key\n3. **Google Sheets**: Replace `REPLACE_WITH_YOUR_SPREADSHEET_ID` in the Sheets node\n   - Tab must be named `Support Tickets` with columns:\n   `ticket_id | from_email | from_name | subject | body_text | intent | status | received_at`\n4. **Workflow 3 ID**: After importing Workflow 3, open the `Execute Workflow` node and set its ID\n5. **Gmail IMAP**: Enable at myaccount.google.com → Security → IMAP access"
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "sticky-w2-intents",
+      "name": "Intent Categories",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [960, 60],
+      "parameters": {
+        "color": 7,
+        "width": 340,
+        "height": 280,
+        "content": "## Intent Categories\nOpenAI classifies each email into one of:\n\n| Intent | Meaning |\n|---|---|\n| `order_issue` | Wrong / missing order |\n| `refund_request` | Customer wants refund |\n| `product_help` | Activation / install help |\n| `delivery` | License key not received |\n| `general` | Everything else |\n\nThe intent is stored in the ticket and used by Workflow 3 to craft a relevant AI reply."
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "imap-trigger-001",
+      "name": "Email Trigger (IMAP)",
+      "type": "n8n-nodes-base.emailReadImap",
+      "position": [240, 440],
+      "parameters": {
+        "mailbox": "INBOX",
+        "options": {
+          "allowUnauthorizedCerts": false,
+          "forceReconnect": false
+        },
+        "postProcessAction": "read",
+        "format": "both"
+      },
+      "credentials": {
+        "imap": {
+          "id": "REPLACE_IMAP_CREDENTIAL_ID",
+          "name": "Support Inbox IMAP"
+        }
+      },
+      "typeVersion": 2,
+      "polling": true
+    },
+    {
+      "id": "markdown-001",
+      "name": "Markdown - HTML to Text",
+      "type": "n8n-nodes-base.markdown",
+      "position": [480, 440],
+      "parameters": {
+        "mode": "htmlToMarkdown",
+        "html": "={{ $json.html || $json.text || '' }}"
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "code-extract-001",
+      "name": "Code - Extract Email Data",
+      "type": "n8n-nodes-base.code",
+      "position": [720, 440],
+      "parameters": {
+        "jsCode": "// Get original email fields from IMAP trigger\nconst email = $('Email Trigger (IMAP)').first().json;\n\n// Get clean body text from Markdown node\nconst bodyText = $input.first().json.data || email.text || '';\n\n// Extract sender address cleanly\nlet fromEmail = '';\nlet fromName  = '';\nif (email.from && email.from.value && email.from.value[0]) {\n  fromEmail = email.from.value[0].address || '';\n  fromName  = email.from.value[0].name    || '';\n} else {\n  fromEmail = String(email.from || '');\n}\n\nreturn [{\n  json: {\n    message_id:  email.messageId || ('MSG-' + Date.now()),\n    from_email:  fromEmail,\n    from_name:   fromName,\n    subject:     email.subject  || '(no subject)',\n    body_text:   bodyText.substring(0, 3000),\n    received_at: email.date    || new Date().toISOString()\n  }\n}];"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "http-openai-classify-001",
+      "name": "OpenAI - Classify Intent",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [960, 440],
+      "parameters": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "method": "POST",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'gpt-4o-mini',\n  temperature: 0,\n  max_tokens: 20,\n  messages: [\n    {\n      role: 'system',\n      content: 'You classify customer support emails for a digital software store. Classify into exactly ONE of these categories:\\n\\norder_issue - problems with an existing order\\nrefund_request - customer wants a refund\\nproduct_help - activation, installation, or usage questions\\ndelivery - asking about or has not received their license key\\ngeneral - anything else\\n\\nReply with ONLY the category name, nothing else. No punctuation, no explanation.'\n    },\n    {\n      role: 'user',\n      content: 'Subject: ' + $json.subject + '\\n\\n' + $json.body_text\n    }\n  ]\n}) }}",
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI API"
+        }
+      },
+      "typeVersion": 4.1
+    },
+    {
+      "id": "code-parse-classify-001",
+      "name": "Code - Build Ticket",
+      "type": "n8n-nodes-base.code",
+      "position": [1200, 440],
+      "parameters": {
+        "jsCode": "// Pull email data from the extraction node\nconst emailData = $('Code - Extract Email Data').first().json;\n\n// Pull OpenAI classification result\nconst openaiResult = $input.first().json;\nconst rawIntent = openaiResult.choices?.[0]?.message?.content?.trim().toLowerCase() || 'general';\n\n// Validate against allowed categories\nconst validIntents = ['order_issue', 'refund_request', 'product_help', 'delivery', 'general'];\nconst intent = validIntents.includes(rawIntent) ? rawIntent : 'general';\n\n// Generate a unique ticket ID\nconst ticketId = 'TKT-' + Date.now();\n\nreturn [{\n  json: {\n    ticket_id:   ticketId,\n    from_email:  emailData.from_email,\n    from_name:   emailData.from_name,\n    subject:     emailData.subject,\n    body_text:   emailData.body_text,\n    message_id:  emailData.message_id,\n    intent:      intent,\n    status:      'open',\n    ai_draft:    null,\n    received_at: emailData.received_at\n  }\n}];"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "sheets-log-ticket-001",
+      "name": "Sheets - Log Support Ticket",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [1440, 440],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=2",
+          "mode": "list",
+          "cachedResultName": "Support Tickets"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ticket_id":   "={{ $json.ticket_id }}",
+            "from_email":  "={{ $json.from_email }}",
+            "from_name":   "={{ $json.from_name }}",
+            "subject":     "={{ $json.subject }}",
+            "body_text":   "={{ $json.body_text }}",
+            "intent":      "={{ $json.intent }}",
+            "status":      "={{ $json.status }}",
+            "received_at": "={{ $json.received_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "ticket_id",
+              "displayName": "ticket_id",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "from_email",
+              "displayName": "from_email",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "from_name",
+              "displayName": "from_name",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "body_text",
+              "displayName": "body_text",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "intent",
+              "displayName": "intent",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_CREDENTIAL_ID",
+          "name": "Google Sheets OAuth2"
+        }
+      },
+      "typeVersion": 4.5
+    },
+    {
+      "id": "execute-wf3-001",
+      "name": "Execute Workflow 3 - AI Support Agent",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "position": [1680, 440],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_WORKFLOW_3_ID",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "typeVersion": 2
+    }
+  ],
+  "connections": {
+    "Email Trigger (IMAP)": {
+      "main": [
+        [
+          {
+            "node": "Markdown - HTML to Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Markdown - HTML to Text": {
+      "main": [
+        [
+          {
+            "node": "Code - Extract Email Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Extract Email Data": {
+      "main": [
+        [
+          {
+            "node": "OpenAI - Classify Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI - Classify Intent": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Ticket": {
+      "main": [
+        [
+          {
+            "node": "Sheets - Log Support Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheets - Log Support Ticket": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow 3 - AI Support Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
